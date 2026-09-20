@@ -7,10 +7,7 @@ const CONFIG = {
     MOVE_SPEED: 4.3, // Minecraft walking speed
     JUMP_FORCE: 8.5, // Minecraft jump height
     GRAVITY: -20,
-    LOOK_SENSITIVITY: 0.004,
-    JOYSTICK_MAX_DISTANCE: 40,
-    JOYSTICK_DEADZONE: 0.1,
-    JOYSTICK_SMOOTHING: 0.3 // Lower = smoother, less snappy
+    LOOK_SENSITIVITY: 0.004
 };
 
 // Global variables
@@ -25,16 +22,7 @@ let player = {
 
 let joystickData = {
     active: false,
-    centerX: 0,
-    centerY: 0,
-    currentX: 0,
-    currentY: 0,
-    deltaX: 0,
-    deltaY: 0,
-    smoothedX: 0,
-    smoothedY: 0,
-    touchId: null,
-    baseRect: null
+    direction: 0 // 0=none, 1=up, 2=down, 3=left, 4=right
 };
 
 let lookData = {
@@ -49,6 +37,10 @@ let lastTime = performance.now();
 let frameCount = 0;
 let fps = 0;
 let gameStarted = false;
+
+// Fixed timestep for consistent physics regardless of FPS
+const FIXED_DELTA_TIME = 1 / 60; // 60 TPS
+let physicsAccumulator = 0;
 
 // Initialize the game
 function init() {
@@ -227,99 +219,90 @@ function setupControls() {
 
 function handleJoystickStart(e) {
     e.preventDefault();
-    const touch = e.changedTouches[0];
-    joystickData.touchId = touch.identifier;
-    
-    // Get the container rect and store it
-    const container = document.getElementById('joystick-container');
-    const rect = container.getBoundingClientRect();
-    joystickData.baseRect = rect;
-    joystickData.centerX = rect.left + rect.width / 2;
-    joystickData.centerY = rect.top + rect.height / 2;
-    joystickData.currentX = touch.clientX;
-    joystickData.currentY = touch.clientY;
     joystickData.active = true;
-    
-    updateJoystick();
+    updateDpad();
 }
 
 function handleJoystickMove(e) {
     if (!joystickData.active) return;
     e.preventDefault();
-    
-    for (let i = 0; i < e.changedTouches.length; i++) {
-        if (e.changedTouches[i].identifier === joystickData.touchId) {
-            const touch = e.changedTouches[i];
-            joystickData.currentX = touch.clientX;
-            joystickData.currentY = touch.clientY;
-            break;
-        }
-    }
-    
-    updateJoystick();
+    updateDpad();
 }
 
 function handleJoystickEnd(e) {
     e.preventDefault();
+    joystickData.active = false;
+    joystickData.direction = 0;
+    updateDpadVisual(0, 0);
+}
+
+function updateDpad() {
+    const container = document.getElementById('joystick-container');
+    const rect = container.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
     
-    for (let i = 0; i < e.changedTouches.length; i++) {
-        if (e.changedTouches[i].identifier === joystickData.touchId) {
-            joystickData.active = false;
-            joystickData.touchId = null;
-            joystickData.deltaX = 0;
-            joystickData.deltaY = 0;
-            joystickData.smoothedX = 0;
-            joystickData.smoothedY = 0;
-            joystickData.baseRect = null;
-            
-            const joystickKnob = document.getElementById('joystick-knob');
-            joystickKnob.style.transform = 'translate(-50%, -50%)';
+    // Find active touch in the joystick area
+    let activeTouch = null;
+    for (let i = 0; i < event.touches.length; i++) {
+        const touch = event.touches[i];
+        const dx = touch.clientX - centerX;
+        const dy = touch.clientY - centerY;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        if (distance < rect.width / 2) {
+            activeTouch = touch;
             break;
         }
     }
+    
+    if (!activeTouch) {
+        joystickData.direction = 0;
+        updateDpadVisual(0, 0);
+        return;
+    }
+    
+    const touch = activeTouch;
+    const dx = touch.clientX - centerX;
+    const dy = touch.clientY - centerY;
+    
+    // Determine direction based on which axis has greater magnitude
+    const absX = Math.abs(dx);
+    const absY = Math.abs(dy);
+    const threshold = 15; // Deadzone threshold
+    
+    let direction = 0;
+    let visualX = 0;
+    let visualY = 0;
+    
+    if (absX < threshold && absY < threshold) {
+        direction = 0;
+    } else if (absY > absX) {
+        // Vertical movement dominates
+        if (dy < -threshold) {
+            direction = 1; // Up/Forward
+            visualY = -20;
+        } else if (dy > threshold) {
+            direction = 2; // Down/Backward
+            visualY = 20;
+        }
+    } else {
+        // Horizontal movement dominates
+        if (dx < -threshold) {
+            direction = 3; // Left
+            visualX = -20;
+        } else if (dx > threshold) {
+            direction = 4; // Right
+            visualX = 20;
+        }
+    }
+    
+    joystickData.direction = direction;
+    updateDpadVisual(visualX, visualY);
 }
 
-function updateJoystick() {
-    const maxDistance = CONFIG.JOYSTICK_MAX_DISTANCE;
-    let dx = joystickData.currentX - joystickData.centerX;
-    let dy = joystickData.currentY - joystickData.centerY;
-    
-    const distance = Math.sqrt(dx * dx + dy * dy);
-    
-    // Normalize to -1 to 1 range with deadzone
-    if (distance > maxDistance) {
-        dx = (dx / distance) * maxDistance;
-        dy = (dy / distance) * maxDistance;
-    }
-    
-    // Apply deadzone - only register movement beyond threshold
-    const normalizedX = dx / maxDistance;
-    const normalizedY = dy / maxDistance;
-    const deadzone = CONFIG.JOYSTICK_DEADZONE;
-    
-    // Apply deadzone smoothly
-    let adjustedX = 0;
-    let adjustedY = 0;
-    
-    if (Math.abs(normalizedX) > deadzone) {
-        adjustedX = (Math.abs(normalizedX) - deadzone) / (1 - deadzone);
-        adjustedX = Math.sign(normalizedX) * adjustedX;
-    }
-    
-    if (Math.abs(normalizedY) > deadzone) {
-        adjustedY = (Math.abs(normalizedY) - deadzone) / (1 - deadzone);
-        adjustedY = Math.sign(normalizedY) * adjustedY;
-    }
-    
-    // Apply smoothing for less snappy, more Minecraft-like feel
-    joystickData.smoothedX += (adjustedX - joystickData.smoothedX) * CONFIG.JOYSTICK_SMOOTHING;
-    joystickData.smoothedY += (adjustedY - joystickData.smoothedY) * CONFIG.JOYSTICK_SMOOTHING;
-    
-    joystickData.deltaX = joystickData.smoothedX;
-    joystickData.deltaY = joystickData.smoothedY;
-    
+function updateDpadVisual(x, y) {
     const joystickKnob = document.getElementById('joystick-knob');
-    joystickKnob.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
+    joystickKnob.style.transform = `translate(calc(-50% + ${x}px), calc(-50% + ${y}px))`;
 }
 
 function handleLookStart(e) {
@@ -420,19 +403,23 @@ function updatePhysics(deltaTime) {
     // Apply gravity
     player.velocity.y += CONFIG.GRAVITY * deltaTime;
     
-    // Calculate movement based on joystick and camera rotation
+    // Calculate movement based on D-pad and camera rotation
     let moveX = 0;
     let moveZ = 0;
     
-    if (joystickData.active && gameStarted) {
-        // In Minecraft PE: pushing forward (negative Y on screen) moves forward
-        // Pushing right (positive X) strafes right
-        const forward = -joystickData.deltaY; // Positive = forward
-        const right = joystickData.deltaX;     // Positive = right
+    if (joystickData.active && gameStarted && joystickData.direction !== 0) {
+        // D-pad directions: 1=forward, 2=backward, 3=left, 4=right
+        let forward = 0;
+        let right = 0;
+        
+        switch(joystickData.direction) {
+            case 1: forward = 1; break;  // Up/Forward
+            case 2: forward = -1; break; // Down/Backward
+            case 3: right = -1; break;   // Left
+            case 4: right = 1; break;    // Right
+        }
         
         // Convert to world coordinates based on camera direction
-        // Forward/backward movement along the camera's Z axis
-        // Left/right strafing perpendicular to camera direction
         moveX = right * Math.cos(player.rotation.y) + forward * Math.sin(player.rotation.y);
         moveZ = right * Math.sin(player.rotation.y) - forward * Math.cos(player.rotation.y);
     }
@@ -488,10 +475,21 @@ function animate() {
     requestAnimationFrame(animate);
     
     const currentTime = performance.now();
-    const deltaTime = Math.min((currentTime - lastTime) / 1000, 0.1);
+    let deltaTime = (currentTime - lastTime) / 1000;
+    lastTime = currentTime;
+    
+    // Cap delta time to prevent huge jumps
+    deltaTime = Math.min(deltaTime, 0.1);
     
     if (gameStarted) {
-        updatePhysics(deltaTime);
+        // Accumulate time for fixed timestep physics
+        physicsAccumulator += deltaTime;
+        
+        // Update physics at fixed timestep
+        while (physicsAccumulator >= FIXED_DELTA_TIME) {
+            updatePhysics(FIXED_DELTA_TIME);
+            physicsAccumulator -= FIXED_DELTA_TIME;
+        }
     }
     updateFPS();
     
