@@ -1,14 +1,15 @@
-// Game configuration
+// Game configuration - Minecraft PE style
 const CONFIG = {
     BOX_SIZE: 5,
     BLOCK_SIZE: 1,
     PLAYER_HEIGHT: 1.7,
-    PLAYER_RADIUS: 0.4,
-    MOVE_SPEED: 6,
-    JUMP_FORCE: 10,
-    GRAVITY: -25,
-    LOOK_SENSITIVITY: 0.005,
-    JOYSTICK_MAX_DISTANCE: 50
+    PLAYER_RADIUS: 0.3,
+    MOVE_SPEED: 4.3, // Minecraft walking speed
+    JUMP_FORCE: 8.5, // Minecraft jump height
+    GRAVITY: -20,
+    LOOK_SENSITIVITY: 0.004,
+    JOYSTICK_MAX_DISTANCE: 40,
+    JOYSTICK_DEADZONE: 0.15
 };
 
 // Global variables
@@ -29,7 +30,8 @@ let joystickData = {
     currentY: 0,
     deltaX: 0,
     deltaY: 0,
-    touchId: null
+    touchId: null,
+    baseRect: null
 };
 
 let lookData = {
@@ -190,13 +192,21 @@ function setupControls() {
     lookZone.addEventListener('touchend', handleLookEnd);
     lookZone.addEventListener('touchcancel', handleLookEnd);
     
-    // Jump button
+    // Jump button with inline handler (removed handleJump function)
     const jumpBtn = document.getElementById('jump-btn');
-    jumpBtn.addEventListener('touchstart', handleJump, { passive: false });
-    
-    // Prevent default touch behaviors
-    document.addEventListener('touchmove', (e) => {
+    jumpBtn.addEventListener('touchstart', (e) => {
         e.preventDefault();
+        if (player.onGround && gameStarted) {
+            player.velocity.y = CONFIG.JUMP_FORCE;
+            player.onGround = false;
+        }
+    }, { passive: false });
+    
+    // Prevent default touch behaviors globally only when game started
+    document.addEventListener('touchmove', (e) => {
+        if (gameStarted) {
+            e.preventDefault();
+        }
     }, { passive: false });
 }
 
@@ -205,7 +215,10 @@ function handleJoystickStart(e) {
     const touch = e.changedTouches[0];
     joystickData.touchId = touch.identifier;
     
-    const rect = e.target.getBoundingClientRect();
+    // Get the container rect and store it
+    const container = document.getElementById('joystick-container');
+    const rect = container.getBoundingClientRect();
+    joystickData.baseRect = rect;
     joystickData.centerX = rect.left + rect.width / 2;
     joystickData.centerY = rect.top + rect.height / 2;
     joystickData.currentX = touch.clientX;
@@ -240,6 +253,7 @@ function handleJoystickEnd(e) {
             joystickData.touchId = null;
             joystickData.deltaX = 0;
             joystickData.deltaY = 0;
+            joystickData.baseRect = null;
             
             const joystickKnob = document.getElementById('joystick-knob');
             joystickKnob.style.transform = 'translate(-50%, -50%)';
@@ -255,13 +269,33 @@ function updateJoystick() {
     
     const distance = Math.sqrt(dx * dx + dy * dy);
     
+    // Normalize to -1 to 1 range with deadzone
     if (distance > maxDistance) {
         dx = (dx / distance) * maxDistance;
         dy = (dy / distance) * maxDistance;
     }
     
-    joystickData.deltaX = dx / maxDistance;
-    joystickData.deltaY = dy / maxDistance;
+    // Apply deadzone - only register movement beyond threshold
+    const normalizedX = dx / maxDistance;
+    const normalizedY = dy / maxDistance;
+    const deadzone = CONFIG.JOYSTICK_DEADZONE;
+    
+    // Apply deadzone smoothly
+    let adjustedX = 0;
+    let adjustedY = 0;
+    
+    if (Math.abs(normalizedX) > deadzone) {
+        adjustedX = (Math.abs(normalizedX) - deadzone) / (1 - deadzone);
+        adjustedX = Math.sign(normalizedX) * adjustedX;
+    }
+    
+    if (Math.abs(normalizedY) > deadzone) {
+        adjustedY = (Math.abs(normalizedY) - deadzone) / (1 - deadzone);
+        adjustedY = Math.sign(normalizedY) * adjustedY;
+    }
+    
+    joystickData.deltaX = adjustedX;
+    joystickData.deltaY = adjustedY;
     
     const joystickKnob = document.getElementById('joystick-knob');
     joystickKnob.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
@@ -319,15 +353,6 @@ function handleLookEnd(e) {
     }
 }
 
-function handleJump(e) {
-    e.preventDefault();
-    if (player.onGround && gameStarted) {
-        player.velocity.y = CONFIG.JUMP_FORCE;
-        player.onGround = false;
-        player.canJump = false;
-    }
-}
-
 function onWindowResize() {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
@@ -371,7 +396,7 @@ function checkCollision(newPos) {
 }
 
 function updatePhysics(deltaTime) {
-    // Apply gravity with smooth interpolation
+    // Apply gravity
     player.velocity.y += CONFIG.GRAVITY * deltaTime;
     
     // Calculate movement based on joystick and camera rotation
@@ -382,16 +407,12 @@ function updatePhysics(deltaTime) {
         const forward = -joystickData.deltaY;
         const right = joystickData.deltaX;
         
-        // Smooth movement with deadzone
-        const deadzone = 0.1;
-        const adjustedForward = Math.abs(forward) > deadzone ? forward : 0;
-        const adjustedRight = Math.abs(right) > deadzone ? right : 0;
-        
-        moveX = adjustedRight * Math.cos(player.rotation.y) - adjustedForward * Math.sin(player.rotation.y);
-        moveZ = adjustedRight * Math.sin(player.rotation.y) + adjustedForward * Math.cos(player.rotation.y);
+        // Deadzone already applied in updateJoystick, use values directly
+        moveX = right * Math.cos(player.rotation.y) - forward * Math.sin(player.rotation.y);
+        moveZ = right * Math.sin(player.rotation.y) + forward * Math.cos(player.rotation.y);
     }
     
-    // Apply movement with smoothing
+    // Apply movement
     const moveSpeed = CONFIG.MOVE_SPEED;
     const oldPos = player.position.clone();
     
@@ -407,20 +428,18 @@ function updatePhysics(deltaTime) {
     // Apply vertical movement
     player.position.y += player.velocity.y * deltaTime;
     
-    // Check vertical collisions
-    const wasAboveGround = player.position.y > -CONFIG.BOX_SIZE/2 + CONFIG.PLAYER_HEIGHT;
+    // Check vertical collisions - ground level is at -BOX_SIZE/2
+    const groundLevel = -CONFIG.BOX_SIZE / 2 + CONFIG.PLAYER_HEIGHT;
     
-    if (checkCollision(player.position)) {
-        if (player.velocity.y < 0 && wasAboveGround) {
-            player.onGround = true;
-            player.canJump = true;
-        }
+    if (player.position.y <= groundLevel) {
+        player.position.y = groundLevel;
         player.velocity.y = 0;
+        player.onGround = true;
     } else {
         player.onGround = false;
     }
     
-    // Update camera position and rotation smoothly
+    // Update camera position and rotation
     camera.position.copy(player.position);
     camera.rotation.order = 'YXZ';
     camera.rotation.y = player.rotation.y;
