@@ -9,7 +9,8 @@ const CONFIG = {
     GRAVITY: -20,
     LOOK_SENSITIVITY: 0.004,
     JOYSTICK_MAX_DISTANCE: 40,
-    JOYSTICK_DEADZONE: 0.15
+    JOYSTICK_DEADZONE: 0.1,
+    JOYSTICK_SMOOTHING: 0.3 // Lower = smoother, less snappy
 };
 
 // Global variables
@@ -30,6 +31,8 @@ let joystickData = {
     currentY: 0,
     deltaX: 0,
     deltaY: 0,
+    smoothedX: 0,
+    smoothedY: 0,
     touchId: null,
     baseRect: null
 };
@@ -192,14 +195,21 @@ function setupControls() {
     lookZone.addEventListener('touchend', handleLookEnd);
     lookZone.addEventListener('touchcancel', handleLookEnd);
     
-    // Jump button with inline handler (removed handleJump function)
+    // Jump button - proper touch handling
     const jumpBtn = document.getElementById('jump-btn');
     jumpBtn.addEventListener('touchstart', (e) => {
         e.preventDefault();
         if (player.onGround && gameStarted) {
             player.velocity.y = CONFIG.JUMP_FORCE;
             player.onGround = false;
+            // Visual feedback
+            jumpBtn.style.transform = 'scale(0.9)';
         }
+    }, { passive: false });
+    
+    jumpBtn.addEventListener('touchend', (e) => {
+        e.preventDefault();
+        jumpBtn.style.transform = 'scale(1)';
     }, { passive: false });
     
     // Prevent default touch behaviors globally only when game started
@@ -208,6 +218,11 @@ function setupControls() {
             e.preventDefault();
         }
     }, { passive: false });
+    
+    // Also prevent jump button from stealing focus
+    jumpBtn.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+    });
 }
 
 function handleJoystickStart(e) {
@@ -253,6 +268,8 @@ function handleJoystickEnd(e) {
             joystickData.touchId = null;
             joystickData.deltaX = 0;
             joystickData.deltaY = 0;
+            joystickData.smoothedX = 0;
+            joystickData.smoothedY = 0;
             joystickData.baseRect = null;
             
             const joystickKnob = document.getElementById('joystick-knob');
@@ -294,8 +311,12 @@ function updateJoystick() {
         adjustedY = Math.sign(normalizedY) * adjustedY;
     }
     
-    joystickData.deltaX = adjustedX;
-    joystickData.deltaY = adjustedY;
+    // Apply smoothing for less snappy, more Minecraft-like feel
+    joystickData.smoothedX += (adjustedX - joystickData.smoothedX) * CONFIG.JOYSTICK_SMOOTHING;
+    joystickData.smoothedY += (adjustedY - joystickData.smoothedY) * CONFIG.JOYSTICK_SMOOTHING;
+    
+    joystickData.deltaX = joystickData.smoothedX;
+    joystickData.deltaY = joystickData.smoothedY;
     
     const joystickKnob = document.getElementById('joystick-knob');
     joystickKnob.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
@@ -404,12 +425,16 @@ function updatePhysics(deltaTime) {
     let moveZ = 0;
     
     if (joystickData.active && gameStarted) {
-        const forward = -joystickData.deltaY;
-        const right = joystickData.deltaX;
+        // In Minecraft PE: pushing forward (negative Y on screen) moves forward
+        // Pushing right (positive X) strafes right
+        const forward = -joystickData.deltaY; // Positive = forward
+        const right = joystickData.deltaX;     // Positive = right
         
-        // Deadzone already applied in updateJoystick, use values directly
-        moveX = right * Math.cos(player.rotation.y) - forward * Math.sin(player.rotation.y);
-        moveZ = right * Math.sin(player.rotation.y) + forward * Math.cos(player.rotation.y);
+        // Convert to world coordinates based on camera direction
+        // Forward/backward movement along the camera's Z axis
+        // Left/right strafing perpendicular to camera direction
+        moveX = right * Math.cos(player.rotation.y) + forward * Math.sin(player.rotation.y);
+        moveZ = right * Math.sin(player.rotation.y) - forward * Math.cos(player.rotation.y);
     }
     
     // Apply movement
